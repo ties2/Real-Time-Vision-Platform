@@ -28,30 +28,26 @@ class ModelRegistry:
         self._models: dict[str, ModelInterface] = {}
 
     def register_config(
-            self,
-            name: str,
-            config: ModelConfig,
+        self,
+        name: str,
+        config: ModelConfig,
     ) -> None:
         """Register model configuration."""
 
         if name in self._configs:
-            raise ValueError(
-                f"Model configuration '{name}' is already registered."
-            )
+            raise ValueError(f"Model configuration '{name}' is already registered.")
 
         self._configs[name] = config
 
     def register(
-            self,
-            name: str,
-            model: ModelInterface,
+        self,
+        name: str,
+        model: ModelInterface,
     ) -> None:
         """Register an initialized model instance."""
 
         if name in self._models:
-            raise ValueError(
-                f"Model '{name}' is already registered."
-            )
+            raise ValueError(f"Model '{name}' is already registered.")
 
         self._models[name] = model
 
@@ -61,9 +57,7 @@ class ModelRegistry:
         try:
             return self._models[name]
         except KeyError as exc:
-            raise KeyError(
-                f"Model '{name}' is not loaded."
-            ) from exc
+            raise KeyError(f"Model '{name}' is not loaded.") from exc
 
     def get_config(self, name: str) -> ModelConfig:
         """Return model configuration."""
@@ -71,9 +65,7 @@ class ModelRegistry:
         try:
             return self._configs[name]
         except KeyError as exc:
-            raise KeyError(
-                f"Model configuration '{name}' is not registered."
-            ) from exc
+            raise KeyError(f"Model configuration '{name}' is not registered.") from exc
 
     def exists(self, name: str) -> bool:
         """Check whether a model is loaded."""
@@ -93,7 +85,11 @@ class ModelRegistry:
     def metadata(self) -> dict[str, dict[str, Any]]:
         """Return metadata for loaded models."""
 
-        return {
-            name: model.metadata()
-            for name, model in self._models.items()
-        }
+        return {name: model.metadata() for name, model in self._models.items()}
+    def list_metadata(self) -> list[dict[str, Any]]:
+        """Return metadata for all loaded models."""
+
+        return [
+            model.metadata()
+            for model in self._models.values()
+        ]
