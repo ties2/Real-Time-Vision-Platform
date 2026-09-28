@@ -23,9 +23,9 @@ class InferenceEngine:
         self.registry = registry
 
     def predict(
-            self,
-            model_name: str,
-            image: np.ndarray,
+        self,
+        model_name: str,
+        image: np.ndarray,
     ) -> InferenceResult:
         """Run inference using a registered model."""
 

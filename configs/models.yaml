@@ -4,5 +4,5 @@ models:
     task: detect
     version: "1.0.0"
     artifact: yolo11n.pt
-    device: auto
+    device: mps #device: mps (for mac system) or default: auto
     confidence_threshold: 0.5

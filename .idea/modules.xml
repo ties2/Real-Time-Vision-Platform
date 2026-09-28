@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/Real-Time-Object-Detection-API-yolo8.iml" filepath="$PROJECT_DIR$/.idea/Real-Time-Object-Detection-API-yolo8.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/Real-Time Vision Platform.iml" filepath="$PROJECT_DIR$/.idea/Real-Time Vision Platform.iml" />
     </modules>
   </component>
 </project>

@@ -8,15 +8,13 @@ from app.models.ultralytics import UltralyticsModel
 
 
 def load_model_registry(
-        config_path: Path,
-        models_dir: Path,
+    config_path: Path,
+    models_dir: Path,
 ) -> ModelRegistry:
     """Load model configurations and initialize configured models."""
 
     if not config_path.exists():
-        raise FileNotFoundError(
-            f"Model configuration not found: {config_path}"
-        )
+        raise FileNotFoundError(f"Model configuration not found: {config_path}")
 
     with config_path.open("r", encoding="utf-8") as file:
         raw_config: dict[str, Any] = yaml.safe_load(file) or {}
@@ -41,8 +39,6 @@ def load_model_registry(
             registry.register(name, model)
 
         else:
-            raise ValueError(
-                f"Unsupported model provider: {config.provider}"
-            )
+            raise ValueError(f"Unsupported model provider: {config.provider}")
 
     return registry

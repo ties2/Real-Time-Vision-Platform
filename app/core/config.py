@@ -22,12 +22,10 @@ class Settings(BaseSettings):
 
     model_registry_path: Path = Field(default=PROJECT_ROOT / "models")
 
-    models_config_path: Path = Field(
-        default=PROJECT_ROOT / "configs" / "models.yaml"
-    )
+    models_config_path: Path = Field(default=PROJECT_ROOT / "configs" / "models.yaml")
     default_model: str = "yolo11"
 
-    model_confidence_threshold: float = 0.5
+    # model_confidence_threshold: float = 0.5
 
     max_image_size_mb: int = 10
 

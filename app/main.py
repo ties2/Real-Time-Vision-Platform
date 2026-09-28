@@ -2,17 +2,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+
 from app.api.routes.health import router as health_router
 from app.api.routes.inference import router as inference_router
-from app.core.config import get_settings
-from app.core.logging import configure_logging, get_logger
-from app.models.loader import load_model_registry
 from app.api.routes.models import router as models_router
-from app.core.request_id import RequestIDMiddleware
-
-
-from app.api.schemas.errors import ErrorResponse
+from app.core.config import get_settings
 from app.core.exceptions import BBAPException
+from app.core.logging import configure_logging, get_logger
+from app.core.request_id import RequestIDMiddleware
+from app.models.loader import load_model_registry
 
 settings = get_settings()
 
@@ -58,8 +56,8 @@ app = FastAPI(
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(
-        request: Request,
-        exc: Exception,
+    request: Request,
+    exc: Exception,
 ) -> JSONResponse:
     request_id = getattr(
         request.state,
@@ -81,10 +79,11 @@ async def unhandled_exception_handler(
         },
     )
 
+
 @app.exception_handler(BBAPException)
 async def bbap_exception_handler(
-        request: Request,
-        exc: BBAPException,
+    request: Request,
+    exc: BBAPException,
 ) -> JSONResponse:
     request_id = getattr(
         request.state,

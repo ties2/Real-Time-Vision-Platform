@@ -7,7 +7,7 @@ from app.api.schemas.inference import (
 
 
 def postprocess_results(
-        results: Any,
+    results: Any,
 ) -> list[Detection]:
     """Convert Ultralytics results into API detections."""
 

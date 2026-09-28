@@ -1,56 +1,70 @@
-from abc import ABC, abstractmethod
-from typing import Any
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, UploadFile
+
+from app.api.dependencies import get_inference_engine
+from app.api.schemas.inference import InferenceResponse
+from app.core.exceptions import InvalidInputError
+from app.inference.engine import InferenceEngine
+from app.inference.postprocessing import postprocess_results
+from app.inference.preprocessing import decode_image
+
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["inference"],
+)
 
 
-class BaseModel(ABC):
-    """
-    Abstract Base Class for all ML models in the serving platform.
-    Any new model (YOLO, ResNet, etc.) must implement these methods.
-    """
+@router.post(
+    "/inference",
+    response_model=InferenceResponse,
+)
+# async def inference(
+#     file: UploadFile = File(...),
+#     model: str = "yolo11",
+#     engine: InferenceEngine = Depends(get_inference_engine),
+# ) -> InferenceResponse:
 
-    @abstractmethod
-    def load(self) -> None:
-        """
-        Load model weights, configurations, and move to target device (CPU/GPU).
-        """
-        pass
+async def inference(
+    engine: Annotated[
+        InferenceEngine,
+        Depends(get_inference_engine),
+    ],
+    file: Annotated[UploadFile, File(...)],
+    model: str = "yolo11",
+) -> InferenceResponse:
+    """Run object detection on an uploaded image."""
 
-    @abstractmethod
-    def preprocess(self, input_data: Any) -> Any:
-        """
-        Convert raw input (e.g., bytes, base64, CV2 image) into the format
-        required by the model (e.g., normalized tensors).
-        """
-        pass
+    if not file.content_type:
+        raise InvalidInputError("Missing content type.")
 
-    @abstractmethod
-    def predict(self, model_input: Any) -> Any:
-        """
-        Core inference step (forward pass).
-        Should ideally be framework-agnostic at the I/O boundary.
-        """
-        pass
+    if not file.content_type.startswith("image/"):
+        raise InvalidInputError("Only image files are supported.")
 
-    @abstractmethod
-    def postprocess(self, model_output: Any) -> Any:
-        """
-        Convert raw model outputs (e.g., raw bounding box tensors)
-        into structured, serializable formats (e.g., list of dicts).
-        """
-        pass
+    # Validate model before processing the image.
+    selected_model = engine.registry.get(model)
 
-    def inference(self, input_data: Any) -> Any:
-        """
-        The complete end-to-end pipeline.
-        Usually, you don't need to override this method in subclasses.
-        """
-        preprocessed_data = self.preprocess(input_data)
-        predictions = self.predict(preprocessed_data)
-        return self.postprocess(predictions)
+    data = await file.read()
 
-    @abstractmethod
-    def metadata(self) -> dict[str, Any]:
-        """
-        Return model metadata for the API (name, version, task type, etc.).
-        """
-        pass
+    try:
+        image = decode_image(data)
+    except ValueError as exc:
+        raise InvalidInputError(str(exc)) from exc
+
+    result = engine.predict(
+        model_name=model,
+        image=image,
+    )
+
+    metadata = selected_model.metadata()
+
+    detections = postprocess_results(result.results)
+
+    return InferenceResponse(
+        model=model,
+        model_version=str(metadata["version"]),
+        inference_time_ms=result.inference_time_ms,
+        image_width=result.image_width,
+        image_height=result.image_height,
+        detections=detections,
+    )

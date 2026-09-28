@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from app.models.base import BaseModel
@@ -5,7 +7,6 @@ from app.models.registry import ModelRegistry
 
 
 class FakeModel(BaseModel):
-
     def load(self) -> None:
         pass
 
@@ -22,8 +23,14 @@ class FakeModel(BaseModel):
         return True
 
 
-def test_register_and_get_model():
-    registry = ModelRegistry()
+@pytest.fixture
+def registry() -> ModelRegistry:
+    return ModelRegistry(
+        models_dir=Path("/tmp/models"),
+    )
+
+
+def test_register_and_get_model(registry):
     model = FakeModel()
 
     registry.register("fake", model)
@@ -32,8 +39,7 @@ def test_register_and_get_model():
     assert registry.get("fake") is model
 
 
-def test_duplicate_model_registration():
-    registry = ModelRegistry()
+def test_duplicate_model_registration(registry):
     model = FakeModel()
 
     registry.register("fake", model)
@@ -42,9 +48,7 @@ def test_duplicate_model_registration():
         registry.register("fake", model)
 
 
-def test_list_models():
-    registry = ModelRegistry()
-
+def test_list_models(registry):
     registry.register("fake", FakeModel())
 
     assert registry.list_models() == ["fake"]

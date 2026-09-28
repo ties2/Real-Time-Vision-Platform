@@ -1,5 +1,3 @@
-from io import BytesIO
-
 import cv2
 import numpy as np
 

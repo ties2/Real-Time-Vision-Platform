@@ -3,6 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from app.core.exceptions import ModelNotFoundError
 from app.models.base import BaseModel as ModelInterface
 
 
@@ -54,10 +55,14 @@ class ModelRegistry:
     def get(self, name: str) -> ModelInterface:
         """Return a registered model instance."""
 
+        # try:
+        #     return self._models[name]
+        # except KeyError:
+        #     raise ModelNotFoundError(f"Model '{name}' is not loaded.")
         try:
             return self._models[name]
         except KeyError as exc:
-            raise KeyError(f"Model '{name}' is not loaded.") from exc
+            raise ModelNotFoundError(f"Model '{name}' is not loaded.") from exc
 
     def get_config(self, name: str) -> ModelConfig:
         """Return model configuration."""
@@ -86,10 +91,8 @@ class ModelRegistry:
         """Return metadata for loaded models."""
 
         return {name: model.metadata() for name, model in self._models.items()}
+
     def list_metadata(self) -> list[dict[str, Any]]:
         """Return metadata for all loaded models."""
 
-        return [
-            model.metadata()
-            for model in self._models.values()
-        ]
+        return [model.metadata() for model in self._models.values()]

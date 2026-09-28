@@ -6,7 +6,7 @@
 env/
 venv/
 ENV/
-
+__pycache__/
 # ========================
 # Python & Cache
 # ========================
@@ -20,7 +20,6 @@ htmlcov/
 build/
 dist/
 *.egg-info/
-
 # ========================
 # Models & Weights (Managed by DVC)
 # ========================
@@ -43,7 +42,8 @@ data/annotations/
 *.jpg
 *.jpeg
 *.png
-
+!tests/fixtures/
+!tests/fixtures/*.jpg
 # ========================
 # MLflow & Tracking
 # ========================
@@ -67,3 +67,5 @@ runs/       # Default YOLO output directory
 .DS_Store
 Thumbs.db
 *.swp
+#======
+doc/My_notes.markdown
