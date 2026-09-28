@@ -1,0 +1,4 @@
+batching:
+  enabled: true
+  max_batch_size: 8
+  max_wait_ms: 5
