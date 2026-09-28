@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.exceptions import BBAPException
 from app.core.logging import configure_logging, get_logger
 from app.core.request_id import RequestIDMiddleware
+from app.inference.engine import InferenceEngine
 from app.models.loader import load_model_registry
 
 settings = get_settings()
@@ -41,9 +42,23 @@ async def lifespan(app: FastAPI):
         registry.list_models(),
     )
 
+    inference_engine = InferenceEngine(
+        registry=registry,
+    )
+
+    app.state.inference_engine = inference_engine
+
+    await inference_engine.start()
+
+    logger.info("Inference engine started")
+
     yield
 
     logger.info("Shutting down application")
+
+    await inference_engine.stop()
+
+    logger.info("Inference engine stopped")
 
 
 app = FastAPI(
@@ -99,14 +114,10 @@ async def bbap_exception_handler(
             "request_id": request_id,
         },
     )
-    #
-    # return JSONResponse(
-    #     status_code=400,
-    #     content=error.model_dump(),
-    # )
 
 
 app.add_middleware(RequestIDMiddleware)
+
 app.include_router(health_router)
 app.include_router(inference_router)
 app.include_router(models_router)
