@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
-def test_list_models():
+def test_list_models(client):
     client = TestClient(app)
 
     response = client.get("/api/v1/models")

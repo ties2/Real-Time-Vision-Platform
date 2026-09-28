@@ -2,7 +2,7 @@ import time
 from dataclasses import dataclass
 
 import numpy as np
-
+from time import perf_counter
 from app.models.registry import ModelRegistry
 
 
@@ -23,25 +23,21 @@ class InferenceEngine:
         self.registry = registry
 
     def predict(
-        self,
-        model_name: str,
-        image: np.ndarray,
+            self,
+            model_name: str,
+            image: np.ndarray,
     ) -> InferenceResult:
-        """Run inference using a registered model."""
-
         model = self.registry.get(model_name)
 
-        image_height, image_width = image.shape[:2]
+        started_at = perf_counter()
 
-        start_time = time.perf_counter()
+        result = model.inference(image)
 
-        results = model.predict(image)
-
-        elapsed = time.perf_counter() - start_time
+        elapsed_ms = (perf_counter() - started_at) * 1000
 
         return InferenceResult(
-            results=results,
-            inference_time_ms=elapsed * 1000,
-            image_width=image_width,
-            image_height=image_height,
+            results=result,
+            inference_time_ms=elapsed_ms,
+            image_width=image.shape[1],
+            image_height=image.shape[0],
         )

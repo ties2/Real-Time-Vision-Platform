@@ -4,18 +4,17 @@ from app.main import app
 
 
 def test_unknown_model_returns_structured_error():
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/v1/inference?model=does-not-exist",
-        files={
-            "file": (
-                "test.jpg",
-                b"invalid-image",
-                "image/jpeg",
-            )
-        },
-    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/inference?model=does-not-exist",
+            files={
+                "file": (
+                    "test.jpg",
+                    b"invalid-image",
+                    "image/jpeg",
+                )
+            },
+        )
 
     assert response.status_code in {400, 404}
 

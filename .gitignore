@@ -44,6 +44,7 @@ data/annotations/
 *.png
 !tests/fixtures/
 !tests/fixtures/*.jpg
+doc/project_notes.md
 # ========================
 # MLflow & Tracking
 # ========================
