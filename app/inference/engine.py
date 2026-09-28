@@ -1,8 +1,9 @@
-import time
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
-from time import perf_counter
+
+from app.inference.batching import DynamicBatcher
 from app.models.registry import ModelRegistry
 
 
@@ -17,27 +18,62 @@ class InferenceResult:
 
 
 class InferenceEngine:
-    """Orchestrates model inference."""
+    """Orchestrates model inference and dynamic batching."""
 
-    def __init__(self, registry: ModelRegistry) -> None:
+    def __init__(
+        self,
+        registry: ModelRegistry,
+        max_batch_size: int = 4,
+        max_wait_ms: int = 10,
+    ) -> None:
         self.registry = registry
 
+        self.batcher = DynamicBatcher(
+            batch_handler=self._predict_batch,
+            max_batch_size=max_batch_size,
+            max_wait_ms=max_wait_ms,
+        )
+
+    async def start(self) -> None:
+        """Start the inference batcher."""
+
+        await self.batcher.start()
+
+    async def stop(self) -> None:
+        """Stop the inference batcher."""
+
+        await self.batcher.stop()
+
     def predict(
-            self,
-            model_name: str,
-            image: np.ndarray,
-    ) -> InferenceResult:
+        self,
+        model_name: str,
+        image: np.ndarray,
+    ) -> Any:
+        """Run single-image inference."""
+
         model = self.registry.get(model_name)
 
-        started_at = perf_counter()
+        return model.predict(image)
 
-        result = model.inference(image)
+    async def predict_batch(
+        self,
+        model_name: str,
+        inputs: list[Any],
+    ) -> list[Any]:
+        """Submit inputs for batched model inference."""
 
-        elapsed_ms = (perf_counter() - started_at) * 1000
-
-        return InferenceResult(
-            results=result,
-            inference_time_ms=elapsed_ms,
-            image_width=image.shape[1],
-            image_height=image.shape[0],
+        return await self.batcher.submit(
+            model_name=model_name,
+            input_data=inputs,
         )
+
+    async def _predict_batch(
+        self,
+        inputs: list[Any],
+    ) -> list[Any]:
+        """Execute one collected batch."""
+
+        if not inputs:
+            return []
+
+        raise NotImplementedError("Model-aware batch execution is the next step.")
