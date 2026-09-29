@@ -21,9 +21,14 @@ IMAGE_PATH = "tests/fixtures/streetAndpeople.jpg"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Concurrent inference benchmark")
-    parser.add_argument("--requests", type=int, default=40)
+    parser.add_argument("--requests", type=int, default=200)
     parser.add_argument("--concurrency", type=int, default=8)
-    parser.add_argument("--warmup", type=int, default=3)
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=40,
+        help="Warm-up requests, sent with the SAME concurrency and discarded.",
+    )
     parser.add_argument("--model", default="yolo11")
     parser.add_argument("--image", default=IMAGE_PATH)
     return parser.parse_args()
@@ -93,6 +98,35 @@ async def check_server(client: httpx.AsyncClient) -> None:
         sys.exit(1)
 
 
+async def run_load(
+        client: httpx.AsyncClient,
+        image_bytes: bytes,
+        model: str,
+        total_requests: int,
+        concurrency: int,
+) -> tuple[list[float], list[int], Counter[str], float]:
+    """Send `total_requests` requests using `concurrency` parallel workers."""
+
+    queue: asyncio.Queue[int] = asyncio.Queue()
+    for index in range(total_requests):
+        queue.put_nowait(index)
+
+    latencies: list[float] = []
+    batch_sizes: list[int] = []
+    errors: Counter[str] = Counter()
+
+    started = time.perf_counter()
+
+    await asyncio.gather(
+        *[
+            worker(client, image_bytes, model, queue, latencies, batch_sizes, errors)
+            for _ in range(concurrency)
+        ]
+    )
+
+    return latencies, batch_sizes, errors, time.perf_counter() - started
+
+
 async def benchmark(args: argparse.Namespace) -> None:
     with open(args.image, "rb") as file:
         image_bytes = file.read()
@@ -100,33 +134,26 @@ async def benchmark(args: argparse.Namespace) -> None:
     async with httpx.AsyncClient(timeout=60.0) as client:
         await check_server(client)
 
-        # Warm-up: first calls load weights/kernels and are much slower.
-        for _ in range(args.warmup):
-            await send_request(client, image_bytes, args.model)
+        # Warm-up with the SAME concurrency as the real run.
+        # On GPU/MPS every new batch shape (1, 2, 3, 4 images) is compiled
+        # the first time it is seen. Sequential warm-up only compiles
+        # batch size 1, so the first real batches would pay that cost.
+        if args.warmup > 0:
+            await run_load(client, image_bytes, args.model, args.warmup, args.concurrency)
 
-        queue: asyncio.Queue[int] = asyncio.Queue()
-        for index in range(args.requests):
-            queue.put_nowait(index)
-
-        latencies: list[float] = []
-        batch_sizes: list[int] = []
-        errors: Counter[str] = Counter()
-
-        started = time.perf_counter()
-
-        await asyncio.gather(
-            *[
-                worker(client, image_bytes, args.model, queue, latencies, batch_sizes, errors)
-                for _ in range(args.concurrency)
-            ]
+        latencies, batch_sizes, errors, elapsed = await run_load(
+            client,
+            image_bytes,
+            args.model,
+            args.requests,
+            args.concurrency,
         )
-
-        elapsed = time.perf_counter() - started
 
     print()
     print("--- Concurrent Benchmark ---")
     print(f"requests:    {args.requests}")
     print(f"concurrency: {args.concurrency}")
+    print(f"warm-up:     {args.warmup} (discarded)")
     print(f"succeeded:   {len(latencies)}")
     print(f"failed:      {sum(errors.values())} {dict(errors) if errors else ''}")
 
