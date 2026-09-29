@@ -36,13 +36,6 @@ async def lifespan(app: FastAPI):
     )
 
     app.state.model_registry = registry
-    inference_engine = InferenceEngine(
-        registry=registry,
-        max_batch_size=4,
-        max_wait_ms=10,
-    )
-    await inference_engine.start()
-    app.state.inference_engine = inference_engine
 
     logger.info(
         "Loaded models: %s",
@@ -51,17 +44,18 @@ async def lifespan(app: FastAPI):
 
     inference_engine = InferenceEngine(
         registry=registry,
+        max_batch_size=4,
+        max_wait_ms=10,
     )
 
-    app.state.inference_engine = inference_engine
-
     await inference_engine.start()
+
+    app.state.inference_engine = inference_engine
 
     logger.info("Inference engine started")
 
     yield
 
-    await inference_engine.stop()
     logger.info("Shutting down application")
 
     await inference_engine.stop()
@@ -79,8 +73,8 @@ app = FastAPI(
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(
-    request: Request,
-    exc: Exception,
+        request: Request,
+        exc: Exception,
 ) -> JSONResponse:
     request_id = getattr(
         request.state,
@@ -105,8 +99,8 @@ async def unhandled_exception_handler(
 
 @app.exception_handler(BBAPException)
 async def bbap_exception_handler(
-    request: Request,
-    exc: BBAPException,
+        request: Request,
+        exc: BBAPException,
 ) -> JSONResponse:
     request_id = getattr(
         request.state,
