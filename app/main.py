@@ -42,17 +42,27 @@ async def lifespan(app: FastAPI):
         registry.list_models(),
     )
 
+    batching = settings.batching
+
+    # Disabling batching == every batch has exactly one request.
+    max_batch_size = batching.max_batch_size if batching.enabled else 1
+
     inference_engine = InferenceEngine(
         registry=registry,
-        max_batch_size=4,
-        max_wait_ms=10,
+        max_batch_size=max_batch_size,
+        max_wait_ms=batching.max_wait_ms,
     )
 
     await inference_engine.start()
 
     app.state.inference_engine = inference_engine
 
-    logger.info("Inference engine started")
+    logger.info(
+        "Inference engine started (batching=%s, max_batch_size=%d, max_wait_ms=%d)",
+        batching.enabled,
+        max_batch_size,
+        batching.max_wait_ms,
+    )
 
     yield
 
