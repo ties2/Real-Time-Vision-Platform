@@ -1,98 +1,102 @@
-
 # BBAP-Sec — Real-Time Vision ML Serving Platform
 
 **Production-oriented computer vision inference platform for real-time object detection.**
 
-BBAP-Sec is an extensible ML serving platform built around **FastAPI, YOLO/Ultralytics, Docker, and modern MLOps practices**.
+BBAP-Sec is an extensible ML serving platform built with **FastAPI and Ultralytics YOLO11**. It focuses on the serving side of machine learning: model registry, dynamic batching, structured errors, request tracing, and measured performance.
 
 <p align="center">
-  <img width="600" alt="ML" src="https://github.com/ties2/Computervision/blob/main/streetAndpeople.jpg">
+  <img width="600" alt="Object detection example" src="tests/fixtures/streetAndpeople.jpg">
 </p>
+
 ---
 
-```text
-Camera / RTSP
-      ↓
-Streaming Pipeline
-      ↓
-Inference
-      ↓
-Tracking
-      ↓
-WebSocket
-      ↓
-Client
-```
 ## Key Features
 
-* REST API for ML inference
-* YOLO / Ultralytics model abstraction
-* Model registry and version-aware architecture
-* Image and real-time video inference
-* RTSP / camera streaming support
-* WebSocket-based real-time results
+**Implemented**
+
+* REST API for object detection (`POST /api/v1/inference`)
+* YOLO11 via an Ultralytics model adapter
+* Model registry with YAML configuration and model metadata
+* **Dynamic, model-aware batching** — concurrent requests are grouped into a single forward pass
+* Non-blocking inference (model runs in a worker thread, the event loop stays responsive)
+* Structured error responses with request IDs (`X-Request-ID`)
 * Request validation with Pydantic
 * Health and readiness endpoints
-* Structured application configuration
-* Docker-based deployment
-* Automated testing and code quality checks
-* MLflow integration planned for experiment tracking and model registry
-* DVC integration planned for dataset/version management
-* Prometheus + Grafana observability planned
+* Environment-based configuration (batching can be switched on/off per deployment)
+* Concurrent load benchmark (p50 / p95 / throughput / average batch size)
+* Unit and integration tests, Ruff linting and formatting
+
+**Planned**
+
+* Docker / Docker Compose deployment
+* Prometheus metrics and Grafana dashboards
+* RTSP / camera streaming pipeline with WebSocket results
+* Object tracking
+* MLflow experiment tracking and DVC dataset versioning
 
 ---
 
 ## Architecture
 
 ```text
-                    ┌───────────────┐
-                    │    Client     │
-                    └───────┬───────┘
-                            │
-                    ┌───────▼───────┐
-                    │    FastAPI    │
-                    │    API Layer  │
-                    └───────┬───────┘
-                            │
-                    ┌───────▼───────┐
-                    │Inference Engine│
-                    └───────┬───────┘
-                            │
-                    ┌───────▼───────┐
-                    │ Model Registry│
-                    └───────┬───────┘
-                            │
-                    ┌───────▼───────┐
-                    │  Ultralytics  │
-                    │     YOLO      │
-                    └───────────────┘
+                 ┌─────────────────┐
+                 │     Client      │
+                 └────────┬────────┘
+                          │  HTTP (image)
+                 ┌────────▼────────┐
+                 │     FastAPI     │  validation · request ID · errors
+                 └────────┬────────┘
+                          │
+                 ┌────────▼────────┐
+                 │ Inference Engine│
+                 └────────┬────────┘
+                          │  submit() → Future
+                 ┌────────▼────────┐
+                 │ Dynamic Batcher │  max_batch_size · max_wait_ms
+                 └────────┬────────┘  one queue, batches split per model
+                          │
+                 ┌────────▼────────┐
+                 │ Model Registry  │
+                 └────────┬────────┘
+                          │  predict_batch() in worker thread
+                 ┌────────▼────────┐
+                 │  YOLO11 (Ultra- │
+                 │   lytics)       │
+                 └─────────────────┘
+```
 
-RTSP / Camera ──► Streaming Pipeline ──► WebSocket ──► Client
+### Request lifecycle
 
-DVC ──► Dataset Versioning
-MLflow ──► Experiments / Model Registry
-Prometheus ──► Metrics
-Grafana ──► Monitoring
-Docker ──► Deployment
+1. The client uploads an image to `/api/v1/inference`.
+2. Middleware assigns a request ID; the image is validated and decoded.
+3. The engine submits the image to the dynamic batcher and awaits a `Future`.
+4. The batcher collects requests for the same model until the batch is full or `max_wait_ms` expires.
+5. The whole batch runs through YOLO11 in **one forward pass**, off the event loop.
+6. Each request receives only its own detections, plus `inference_time_ms` and `batch_size`.
+
+### Planned real-time pipeline
+
+```text
+Camera / RTSP → Frame pipeline → Inference → Tracking → WebSocket → Client
 ```
 
 ---
 
 ## Tech Stack
 
-| Layer               | Technology           |
-| ------------------- | -------------------- |
-| Language            | Python 3.11+         |
-| API                 | FastAPI              |
-| ML                  | Ultralytics YOLO     |
-| Validation          | Pydantic             |
-| Computer Vision     | OpenCV               |
-| Testing             | Pytest               |
-| Code Quality        | Ruff / MyPy          |
-| Containerization    | Docker               |
-| Experiment Tracking | MLflow               |
-| Data Versioning     | DVC                  |
-| Monitoring          | Prometheus / Grafana |
+| Layer               | Technology                     | Status  |
+| ------------------- | ------------------------------ | ------- |
+| Language            | Python 3.11+                   | ✅      |
+| API                 | FastAPI                        | ✅      |
+| ML                  | Ultralytics YOLO11             | ✅      |
+| Validation          | Pydantic / pydantic-settings   | ✅      |
+| Computer Vision     | OpenCV                         | ✅      |
+| Testing             | Pytest / pytest-asyncio        | ✅      |
+| Code Quality        | Ruff / MyPy                    | ✅      |
+| Containerization    | Docker                         | Planned |
+| Monitoring          | Prometheus / Grafana           | Planned |
+| Experiment Tracking | MLflow                         | Planned |
+| Data Versioning     | DVC                            | Planned |
 
 ---
 
@@ -100,19 +104,17 @@ Docker ──► Deployment
 
 ```text
 app/
-├── api/          # REST/WebSocket API
-├── core/         # Configuration, logging, security
-├── inference/    # Preprocessing, inference, postprocessing
-├── models/       # Model abstraction and registry
-└── streaming/    # Camera, RTSP and WebSocket pipeline
+├── api/          # Routes, schemas, dependencies
+├── core/         # Configuration, logging, exceptions, request IDs
+├── inference/    # Engine, dynamic batcher, pre/post-processing
+├── models/       # Model interface, registry, Ultralytics adapter
+└── streaming/    # Camera / RTSP / WebSocket pipeline (planned)
 
-configs/          # Environment/model configuration
+configs/          # Model and environment configuration
 tests/            # Unit and integration tests
-docker/           # Monitoring infrastructure
-models/           # Local model artifacts
-notebooks/        # Experiments
-scripts/          # Utility scripts
-doc/              # Architecture and API documentation
+scripts/          # Benchmark scripts
+models/           # Local model artifacts (e.g. yolo11n.pt)
+doc/              # Architecture and API notes
 ```
 
 ---
@@ -123,20 +125,14 @@ doc/              # Architecture and API documentation
 
 ```bash
 git clone https://github.com/ties2/Real-Time-Vision-Platform
-cd BBAP-Sec
+cd Real-Time-Vision-Platform
 ```
 
 ### 2. Create environment
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
-```
-
-Windows:
-
-```bash
-.venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 ```
 
 ### 3. Install dependencies
@@ -145,11 +141,13 @@ Windows:
 make install
 ```
 
-### 4. Configure environment
+### 4. Configure
 
 ```bash
 cp .env.example .env
 ```
+
+Place the model weights in `models/` (default: `models/yolo11n.pt`). The device is set in `configs/models.yaml` (`auto`, `cpu`, `cuda`, or `mps` on Apple Silicon).
 
 ### 5. Run
 
@@ -157,50 +155,121 @@ cp .env.example .env
 make run
 ```
 
-API:
+* API: `http://localhost:8000`
+* Interactive docs: `http://localhost:8000/docs`
+* Health check: `curl http://localhost:8000/health`
 
-```text
-http://localhost:8000
-```
+---
 
-Interactive API documentation:
-
-```text
-http://localhost:8000/docs
-```
-
-Health check:
+## API Usage
 
 ```bash
-curl http://localhost:8000/health
+curl -X POST "http://localhost:8000/api/v1/inference?model=yolo11" \
+  -F "file=@tests/fixtures/streetAndpeople.jpg"
 ```
+
+Example response (truncated to 3 of 10 detections):
+
+```json
+{
+  "model": "yolo11",
+  "model_version": "1.0.0",
+  "inference_time_ms": 438.23,
+  "batch_size": 1,
+  "image_width": 1024,
+  "image_height": 677,
+  "detections": [
+    {
+      "class_id": 2,
+      "class_name": "car",
+      "confidence": 0.8954,
+      "bbox": { "x1": 239.05, "y1": 296.70, "x2": 420.01, "y2": 384.32 }
+    },
+    {
+      "class_id": 0,
+      "class_name": "person",
+      "confidence": 0.8894,
+      "bbox": { "x1": 483.91, "y1": 238.74, "x2": 576.55, "y2": 499.45 }
+    },
+    {
+      "class_id": 9,
+      "class_name": "traffic light",
+      "confidence": 0.8108,
+      "bbox": { "x1": 169.67, "y1": 123.49, "x2": 200.42, "y2": 202.48 }
+    }
+  ]
+}
+```
+
+`inference_time_ms` is the model time for the batch this request was part of; `batch_size` shows how many requests shared that forward pass.
+
+Errors are returned in a consistent format:
+
+```json
+{
+  "code": "INVALID_INPUT",
+  "message": "Unable to decode image.",
+  "request_id": "3f1c2a..."
+}
+```
+
+---
+
+## Configuration
+
+Dynamic batching is configured through environment variables (or `.env`):
+
+| Variable                   | Default | Description                                  |
+| -------------------------- | ------- | -------------------------------------------- |
+| `BATCHING__ENABLED`        | `true`  | Disable to process every request on its own  |
+| `BATCHING__MAX_BATCH_SIZE` | `4`     | Maximum requests per forward pass            |
+| `BATCHING__MAX_WAIT_MS`    | `10`    | Maximum time to wait for a batch to fill     |
+
+---
+
+## Performance
+
+Benchmarks use `scripts/benchmark_concurrent.py`: concurrent clients send the same image, warm-up requests are sent at the same concurrency and discarded (so every batch shape is compiled before measuring), then p50 / p95 latency, throughput, and average batch size are reported.
+
+```bash
+# Terminal 1 — pick one
+make serve              # batching enabled
+make serve-no-batch     # batching disabled
+
+# Terminal 2
+make benchmark-concurrent                  # 8 clients, 200 requests
+make benchmark-concurrent CONCURRENCY=16   # custom load
+make benchmark-sequential                  # single client baseline
+```
+
+**Environment:** Apple Silicon (MPS), YOLO11n, 200 requests, 40 warm-up requests.
+
+| Setup                          | Concurrency | p50 (ms) | p95 (ms) | Throughput (req/s) | Avg batch |
+| ------------------------------ | ----------- | -------- | -------- | ------------------ | --------- |
+| Single client                  | 1           | 43.92    | 45.39    | 22.80              | 1.00      |
+| Batching disabled              | 8           | 248.41   | 437.45   | 29.40              | 1.00      |
+| Batching enabled (max 4, 10ms) | 8           | 203.01   | 296.15   | **36.66**          | 3.91      |
+
+**Result (8 concurrent clients, batching enabled vs. disabled):**
+
+* **+24.7% throughput** (29.40 → 36.66 req/s)
+* **−18.3% p50 latency** (248.41 → 203.01 ms)
+* **−32.3% p95 latency** (437.45 → 296.15 ms)
+
+Latency under load includes queueing time: with 8 clients in flight, mean latency ≈ concurrency / throughput (Little's law), so it is not comparable to the single-client row. Batching improved throughput and tail latency at the same time because the queue drains faster.
+
+> Batching gains depend on model size and hardware. Small models such as YOLO11n may not saturate the accelerator, which is why batching is configurable per deployment rather than always on.
 
 ---
 
 ## Development
 
-Run tests:
-
 ```bash
-make test
-```
-
-Run linting:
-
-```bash
-make lint
-```
-
-Format code:
-
-```bash
-make format
-```
-
-Run the full quality check:
-
-```bash
-make check
+make test        # run tests
+make lint        # Ruff lint
+make format      # Ruff format
+make typecheck   # MyPy
+make check       # lint + format check + tests
 ```
 
 ---
@@ -220,13 +289,25 @@ make check
 
 ### Phase 2 — Model Serving
 
-* [ ] Ultralytics model adapter
-* [ ] YOLO11 inference
-* [ ] Image inference API
-* [ ] Model metadata
-* [ ] Batch inference
+* [x] Ultralytics model adapter
+* [x] YOLO11 inference
+* [x] Image inference API
+* [x] Model metadata
+* [x] Structured errors and request IDs
+* [x] Dynamic, model-aware batching
+* [x] Concurrent benchmark
+* [x] Published benchmark results (batching on vs. off)
 
-### Phase 3 — Real-Time Vision
+### Phase 3 — Production
+
+* [ ] Docker / Docker Compose
+* [ ] Prometheus metrics
+* [ ] Grafana dashboards
+* [ ] CI/CD
+* [ ] Security hardening
+* [ ] GPU optimization
+
+### Phase 4 — Real-Time Vision
 
 * [ ] Webcam source
 * [ ] RTSP source
@@ -235,20 +316,8 @@ make check
 * [ ] Object tracking
 * [ ] FPS / latency optimization
 
-### Phase 4 — MLOps
+### Phase 5 — MLOps
 
 * [ ] MLflow experiments
-* [ ] Model registry
-* [ ] DVC datasets
 * [ ] Model version management
-
-### Phase 5 — Production
-
-* [ ] Docker Compose
-* [ ] Prometheus metrics
-* [ ] Grafana dashboards
-* [ ] CI/CD
-* [ ] Security hardening
-* [ ] GPU optimization
-
----
+* [ ] DVC datasets
