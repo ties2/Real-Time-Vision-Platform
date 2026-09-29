@@ -25,6 +25,7 @@ class InferenceResponse(BaseModel):
     model: str
     model_version: str
     inference_time_ms: float
+    batch_size: int = 1
     image_width: int
     image_height: int
     detections: list[Detection]
