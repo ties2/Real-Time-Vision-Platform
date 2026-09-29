@@ -1,2 +1,13 @@
 services:
-  
+  vision-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      LOG_LEVEL: INFO
+      BATCHING__ENABLED: "true"
+      BATCHING__MAX_BATCH_SIZE: "4"
+      BATCHING__MAX_WAIT_MS: "10"
+    restart: unless-stopped
