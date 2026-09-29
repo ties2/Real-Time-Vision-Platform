@@ -19,12 +19,6 @@ router = APIRouter(
     "/inference",
     response_model=InferenceResponse,
 )
-# async def inference(
-#     file: UploadFile = File(...),
-#     model: str = "yolo11",
-#     engine: InferenceEngine = Depends(get_inference_engine),
-# ) -> InferenceResponse:
-
 async def inference(
     engine: Annotated[
         InferenceEngine,
@@ -51,7 +45,7 @@ async def inference(
     except ValueError as exc:
         raise InvalidInputError(str(exc)) from exc
 
-    result = engine.predict(
+    result = await engine.submit(
         model_name=model,
         image=image,
     )

@@ -69,7 +69,7 @@ class InferenceEngine:
         model_name: str,
         inputs: list[Any],
     ) -> list[Any]:
-        """Execute one model-specific batch."""
+        """Execute a model-specific batch."""
 
         model = self.registry.get(model_name)
 
@@ -80,7 +80,7 @@ class InferenceEngine:
         model_name: str,
         image: Any,
     ) -> Any:
-        """Submit one request to the model-specific batcher."""
+        """Submit one inference request to the dynamic batcher."""
 
         return await self.batcher.submit(
             model_name,

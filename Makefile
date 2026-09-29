@@ -34,6 +34,9 @@ clean:
 benchmark:
 	python scripts/benchmark.py
 
+benchmark-concurrent:
+	python scripts/benchmark_concurrent.py
+
 #1.ruff check . --fix
 #2.ruff format .
 #3.make check

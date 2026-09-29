@@ -4029,3 +4029,392 @@ Batcher
 
 اگر تست جدید سبز شد، مرحله بعدی را می‌رویم روی **YOLO11 واقعی** و آنجا batch را به `Ultralytics` وصل می‌کنیم؛ بعد benchmark concurrent می‌سازیم تا ببینیم آیا از baseline فعلی **22.25 req/s** بهتر شده یا نه.
 ---
+# Step 8 — Connect API → Dynamic Batching → YOLO11
+
+بریم. **Step 8 — اتصال واقعی API → Dynamic Batcher → YOLO11**.
+
+هدف این مرحله این است که endpoint دیگر مستقیماً:
+
+```text
+API → model.predict()
+```
+
+نباشد و مسیر واقعی این شود:
+
+```text
+POST /api/v1/inference
+        ↓
+InferenceEngine.submit()
+        ↓
+DynamicBatcher
+        ↓
+YOLO11.predict_batch()
+        ↓
+result مربوط به همان request
+```
+
+### 8.1 — `app/main.py`
+
+در `lifespan`، بعد از ساخت registry، `InferenceEngine` را بساز و start کن.
+
+import مربوطه:
+
+```python
+from app.inference.engine import InferenceEngine
+```
+
+داخل `lifespan`:
+
+```python
+registry = load_model_registry(
+    config_path=settings.models_config_path,
+    models_dir=settings.model_registry_path,
+)
+
+app.state.model_registry = registry
+
+inference_engine = InferenceEngine(
+    registry=registry,
+    max_batch_size=4,
+    max_wait_ms=10,
+)
+
+await inference_engine.start()
+
+app.state.inference_engine = inference_engine
+
+logger.info(
+    "Loaded models: %s",
+    registry.list_models(),
+)
+```
+
+و بعد از `yield`:
+
+```python
+await inference_engine.stop()
+
+logger.info("Shutting down application")
+```
+
+بنابراین lifecycle می‌شود:
+
+```text
+startup
+   ↓
+load registry
+   ↓
+create InferenceEngine
+   ↓
+start DynamicBatcher
+   ↓
+serve requests
+   ↓
+shutdown
+   ↓
+stop DynamicBatcher
+```
+
+---
+
+# 8.2 — Dependency
+
+در `app/api/dependencies.py`، dependency مربوط به engine را داشته باش:
+
+```python
+from fastapi import Request
+
+from app.inference.engine import InferenceEngine
+
+
+def get_inference_engine(
+    request: Request,
+) -> InferenceEngine:
+    return request.app.state.inference_engine
+```
+
+---
+
+# 8.3 — `InferenceEngine`
+
+در `app/inference/engine.py` این method را داشته باش:
+
+```python
+async def submit(
+    self,
+    model_name: str,
+    image: Any,
+) -> Any:
+    """Submit one inference request to the dynamic batcher."""
+
+    return await self.batcher.submit(
+        model_name,
+        image,
+    )
+```
+
+و `_predict_batch()`:
+
+```python
+async def _predict_batch(
+    self,
+    model_name: str,
+    inputs: list[Any],
+) -> list[Any]:
+    """Execute a model-specific batch."""
+
+    model = self.registry.get(model_name)
+
+    return model.predict_batch(inputs)
+```
+
+---
+
+# 8.4 — تغییر route
+
+در `app/api/routes/inference.py`، جایی که الان داری:
+
+```python
+result = engine.predict(
+    model_name=model,
+    image=image,
+)
+```
+
+آن را به:
+
+```python
+result = await engine.submit(
+    model_name=model,
+    image=image,
+)
+```
+
+تغییر بده.
+
+یعنی endpoint دیگر خودش تصمیم نمی‌گیرد که YOLO چه زمانی اجرا شود.
+
+Batcher تصمیم می‌گیرد.
+
+---
+
+# 8.5 — نکته مهم response
+
+از نظر API هیچ چیزی نباید خراب شود.
+
+مثلاً اگر چهار request همزمان برسند:
+
+```text
+request A → image A
+request B → image B
+request C → image C
+request D → image D
+```
+
+batcher:
+
+```text
+YOLO11.predict_batch(
+    [
+        image A,
+        image B,
+        image C,
+        image D,
+    ]
+)
+```
+
+نتیجه:
+
+```text
+[
+    result A,
+    result B,
+    result C,
+    result D,
+]
+```
+
+و هر `Future` نتیجه خودش را می‌گیرد:
+
+```text
+request A → result A
+request B → result B
+request C → result C
+request D → result D
+```
+
+این قسمت بسیار مهم است؛ چون batching نباید باعث شود responseها با هم قاطی شوند.
+
+---
+
+# 8.6 — تست API
+
+یک integration test برای این رفتار اضافه کن.
+
+در `tests/integration/test_inference_batching.py`:
+
+```python
+import numpy as np
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_inference_engine_submit(
+    inference_engine,
+    monkeypatch,
+):
+    calls = []
+
+    async def fake_predict_batch(
+        model_name,
+        inputs,
+    ):
+        calls.append(
+            (model_name, len(inputs))
+        )
+
+        return [
+            f"result-{index}"
+            for index in range(len(inputs))
+        ]
+
+    monkeypatch.setattr(
+        inference_engine,
+        "_predict_batch",
+        fake_predict_batch,
+    )
+
+    await inference_engine.start()
+
+    try:
+        results = await asyncio.gather(
+            inference_engine.submit(
+                "yolo11",
+                np.zeros((10, 10, 3), dtype=np.uint8),
+            ),
+            inference_engine.submit(
+                "yolo11",
+                np.zeros((10, 10, 3), dtype=np.uint8),
+            ),
+        )
+
+        assert results == [
+            "result-0",
+            "result-1",
+        ]
+
+        assert calls
+        assert calls[0] == ("yolo11", 2)
+
+    finally:
+        await inference_engine.stop()
+```
+
+در ابتدای فایل:
+
+```python
+import asyncio
+```
+
+اما اگر fixture فعلی پروژه‌ات اسم دیگری برای `inference_engine` دارد، همان fixture موجود را استفاده کن؛ fixture جدید را صرفاً برای این تست duplicate نکن.
+
+---
+
+# 8.7 — تست مهم‌تر
+
+قبل از اینکه YOLO واقعی را از طریق API تست کنیم:
+
+```bash
+pytest tests/unit/test_batching.py -vv
+```
+
+بعد:
+
+```bash
+pytest tests/unit/test_inference.py -vv
+```
+
+بعد integration:
+
+```bash
+pytest tests/integration -vv
+```
+
+و در آخر:
+
+```bash
+make check
+```
+
+باید تمام تست‌های قبلی + تست batching جدید سبز شوند.
+
+---
+
+## یک نکته معماری مهم
+
+فعلاً این را **تغییر نده**:
+
+```python
+predict()
+```
+
+نگهش دار.
+
+ما الان دو مسیر داریم:
+
+```text
+predict()
+    ↓
+direct inference
+```
+
+و:
+
+```text
+submit()
+    ↓
+DynamicBatcher
+    ↓
+predict_batch()
+```
+
+این separation برای production مفید است، چون بعداً می‌توانیم مثلاً health check، warmup یا یک internal low-latency path را بدون اجبار به batching اجرا کنیم.
+
+---
+
+### بعد از `make check` سبز
+
+مرحله بعدی **Step 9 — Benchmark واقعی concurrent batching** است.
+
+آن‌جا دیگر benchmark فعلی:
+
+```text
+p50: 38.91 ms
+p95: 87.18 ms
+throughput: 22.25 req/s
+```
+
+را baseline نگه می‌داریم و مثلاً با:
+
+```text
+1 concurrent request
+4 concurrent requests
+8 concurrent requests
+16 concurrent requests
+```
+
+مقایسه می‌کنیم.
+
+این بخش برای **Upwork portfolio** خیلی مهم است، چون می‌توانیم در README یک بخش واقعی مثل:
+
+```text
+Performance
+
+Baseline:        22.25 req/s
+Batched:         XX.XX req/s
+Throughput gain: XX%
+```
+
+قرار بدهیم، به‌جای اینکه فقط ادعا کنیم سیستم «high performance» است.
+---
