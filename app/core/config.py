@@ -1,10 +1,16 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+class BatchingConfig(BaseModel):
+    enabled: bool = True
+    max_batch_size: int = 4
+    max_wait_ms: int = 10
 
 
 class Settings(BaseSettings):
@@ -30,7 +36,7 @@ class Settings(BaseSettings):
     max_image_size_mb: int = 10
 
     api_prefix: str = "/api/v1"
-
+    batching: BatchingConfig = BatchingConfig()
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

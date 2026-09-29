@@ -1,20 +1,10 @@
-from dataclasses import dataclass
+import asyncio
 from typing import Any
 
 import numpy as np
 
 from app.inference.batching import DynamicBatcher
 from app.models.registry import ModelRegistry
-
-
-@dataclass
-class InferenceResult:
-    """Raw inference result with timing metadata."""
-
-    results: object
-    inference_time_ms: float
-    image_width: int
-    image_height: int
 
 
 class InferenceEngine:
@@ -60,20 +50,39 @@ class InferenceEngine:
         model_name: str,
         inputs: list[Any],
     ) -> list[Any]:
-        """Submit inputs for batched model inference."""
+        """Submit inputs to the model-specific batcher."""
 
-        return await self.batcher.submit(
-            model_name=model_name,
-            input_data=inputs,
+        results = await asyncio.gather(
+            *[
+                self.batcher.submit(
+                    model_name,
+                    input_data,
+                )
+                for input_data in inputs
+            ]
         )
+
+        return results
 
     async def _predict_batch(
         self,
+        model_name: str,
         inputs: list[Any],
     ) -> list[Any]:
-        """Execute one collected batch."""
+        """Execute one model-specific batch."""
 
-        if not inputs:
-            return []
+        model = self.registry.get(model_name)
 
-        raise NotImplementedError("Model-aware batch execution is the next step.")
+        return model.predict_batch(inputs)
+
+    async def submit(
+        self,
+        model_name: str,
+        image: Any,
+    ) -> Any:
+        """Submit one request to the model-specific batcher."""
+
+        return await self.batcher.submit(
+            model_name,
+            image,
+        )

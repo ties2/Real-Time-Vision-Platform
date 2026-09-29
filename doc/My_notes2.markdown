@@ -2379,3 +2379,1653 @@ FPS
 
 اما **قبل از شروع Step 7 فقط مطمئن شو `make check` سبز است**؛ چون از اینجا به بعد performance code روی همین foundation ساخته می‌شود.
 
+---
+# Step 7
+
+عالی. حالا که **15 تست سبز شده**، Step 7 را شروع می‌کنیم. این مرحله را عمداً **از batching شروع نمی‌کنیم**؛ اول baseline واقعی می‌گیریم، بعد batching را روی عدد واقعی مقایسه می‌کنیم.
+
+# Step 7 — Performance Engineering
+
+هدف نهایی:
+
+```text
+                Requests
+                   │
+                   ▼
+             Inference API
+                   │
+                   ▼
+              Queue/Batcher
+                   │
+             ┌─────┴─────┐
+             │           │
+          Batch 1      Batch 2
+             │           │
+             └─────┬─────┘
+                   ▼
+                YOLO11
+                   │
+                   ▼
+             Postprocessing
+                   │
+                   ▼
+               Response
+```
+
+ولی اول:
+
+```text
+Step 7.1 → Baseline
+Step 7.2 → Metrics
+Step 7.3 → Async Batcher
+Step 7.4 → Dynamic batching
+Step 7.5 → Concurrency
+Step 7.6 → Benchmark
+```
+
+---
+
+# Step 7.1 — Baseline Inference Timing
+
+فعلاً **هیچ batching اضافه نکن**.
+
+می‌خواهیم بدانیم الان یک inference معمولی چقدر زمان می‌برد.
+
+## 1. `app/inference/engine.py`
+
+در `InferenceEngine`، timing را با `perf_counter()` اضافه کن.
+
+اگر متد فعلی چیزی شبیه این است:
+
+```python
+def predict(
+    self,
+    model_name: str,
+    image: np.ndarray,
+) -> InferenceResult:
+    model = self.registry.get(model_name)
+
+    result = model.inference(image)
+
+    ...
+```
+
+آن را به این شکل تغییر بده:
+
+```python
+from time import perf_counter
+```
+
+و:
+
+```python
+def predict(
+    self,
+    model_name: str,
+    image: np.ndarray,
+) -> InferenceResult:
+    model = self.registry.get(model_name)
+
+    started_at = perf_counter()
+
+    result = model.inference(image)
+
+    elapsed_ms = (perf_counter() - started_at) * 1000
+
+    return InferenceResult(
+        results=result,
+        inference_time_ms=elapsed_ms,
+        image_width=image.shape[1],
+        image_height=image.shape[0],
+    )
+```
+
+اگر `InferenceResult` را already داری و fieldهای `inference_time_ms`, `image_width`, `image_height` در آن وجود دارند، **همان را استفاده کن و schema جدید نساز.**
+
+---
+
+# چرا `perf_counter()`؟
+
+برای benchmark باید از:
+
+```python
+time.time()
+```
+
+استفاده نکنیم.
+
+برای duration:
+
+```python
+perf_counter()
+```
+
+انتخاب مناسب‌تری است.
+
+ما دقیقاً این را اندازه می‌گیریم:
+
+```text
+model.inference()
+     │
+     ├── preprocess
+     ├── model forward
+     └── postprocess
+```
+
+فعلاً.
+
+بعداً آن را به:
+
+```text
+queue_time
+preprocess_time
+inference_time
+postprocess_time
+total_latency
+```
+
+تفکیک می‌کنیم.
+
+---
+
+# Step 7.2 — یک نکته معماری مهم
+
+من فعلاً **timing را داخل `InferenceEngine` می‌گذارم، نه route**.
+
+یعنی این کار را نکن:
+
+```python
+@app.post(...)
+async def inference(...):
+    started = perf_counter()
+
+    result = engine.predict(...)
+
+    elapsed = ...
+```
+
+چون بعداً وقتی batching اضافه کنیم، route دیگر نمی‌تواند accurately بگوید:
+
+```text
+request waiting time
+batch waiting time
+actual model inference time
+```
+
+Engine باید مسئول measurement مربوط به inference باشد.
+
+---
+
+# Step 7.3 — Baseline Benchmark
+
+حالا یک script واقعی بساز:
+
+```text
+scripts/benchmark.py
+```
+
+نسخه اول ساده است:
+
+```python
+import statistics
+import time
+
+import requests
+
+
+API_URL = "http://127.0.0.1:8000/api/v1/inference"
+IMAGE_PATH = "streetAndpeople.jpg"
+REQUESTS = 20
+
+
+def main() -> None:
+    latencies: list[float] = []
+
+    with open(IMAGE_PATH, "rb") as image_file:
+        image_data = image_file.read()
+
+    for index in range(REQUESTS):
+        started = time.perf_counter()
+
+        response = requests.post(
+            API_URL,
+            params={"model": "yolo11"},
+            files={
+                "file": (
+                    "streetAndpeople.jpg",
+                    image_data,
+                    "image/jpeg",
+                )
+            },
+            timeout=30,
+        )
+
+        elapsed_ms = (
+            time.perf_counter() - started
+        ) * 1000
+
+        response.raise_for_status()
+
+        latencies.append(elapsed_ms)
+
+        print(
+            f"request={index + 1:02d} "
+            f"latency={elapsed_ms:.2f} ms"
+        )
+
+    print("\n--- Baseline ---")
+
+    print(
+        f"requests: {len(latencies)}"
+    )
+
+    print(
+        f"mean: "
+        f"{statistics.mean(latencies):.2f} ms"
+    )
+
+    print(
+        f"p50: "
+        f"{statistics.median(latencies):.2f} ms"
+    )
+
+    print(
+        f"min: "
+        f"{min(latencies):.2f} ms"
+    )
+
+    print(
+        f"max: "
+        f"{max(latencies):.2f} ms"
+    )
+
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+# Step 7.4 — Dependency
+
+اگر `requests` در `requirements.txt` نیست:
+
+```bash
+pip install requests
+```
+
+و در `requirements.txt` هم اضافه کن:
+
+```text
+requests
+```
+
+ولی اگر `realtime_client.py` همین الان از `requests` استفاده می‌کند و dependency موجود است، دوباره اضافه نکن.
+
+---
+
+# Step 7.5 — اجرای benchmark
+
+اول server:
+
+```bash
+make run
+```
+
+بعد در terminal دوم:
+
+```bash
+python scripts/benchmark.py
+```
+
+مثلاً خروجی ممکن است چیزی شبیه:
+
+```text
+request=01 latency=92.31 ms
+request=02 latency=48.72 ms
+request=03 latency=46.11 ms
+...
+request=20 latency=45.83 ms
+
+--- Baseline ---
+
+requests: 20
+mean: 48.72 ms
+p50: 46.21 ms
+min: 44.90 ms
+max: 92.31 ms
+```
+
+**عددها فقط مثال هستند.** عدد واقعی سیستم تو مهم است.
+
+---
+
+# Step 7.6 — چرا این benchmark مهم است؟
+
+الان یک baseline داریم:
+
+```text
+Current system
+──────────────
+
+single request
+      │
+      ▼
+   YOLO11
+      │
+      ▼
+   ~XX ms
+```
+
+بعد batching را اضافه می‌کنیم:
+
+```text
+4 requests
+     │
+     ▼
+ Batch
+ [1,2,3,4]
+     │
+     ▼
+ YOLO11
+     │
+     ▼
+4 results
+```
+
+و مقایسه می‌کنیم:
+
+| Metric          |   Before | After |
+| --------------- | -------: | ----: |
+| p50 latency     |    XX ms |     ? |
+| p95 latency     |    XX ms |     ? |
+| throughput      | XX req/s |     ? |
+| batch size      |        1 |     4 |
+| queue time      |        0 |     ? |
+| model inference |    XX ms |     ? |
+
+این خیلی بهتر از این است که صرفاً بگوییم:
+
+> Added batching support.
+
+چون می‌توانیم در README پروژه نشان دهیم:
+
+> **Performance benchmark: single-request inference vs dynamic batching under concurrent load.**
+
+این برای portfolio/Upwork خیلی ارزشمندتر است.
+
+---
+
+# یک تغییر کوچک در `Makefile`
+
+اضافه کن:
+
+```makefile
+benchmark:
+	python scripts/benchmark.py
+```
+
+بعد:
+
+```bash
+make benchmark
+```
+
+---
+
+# فعلاً این کارها را انجام نده
+
+در این مرحله:
+
+❌ `asyncio.Queue` نساز
+❌ worker نساز
+❌ batch size اضافه نکن
+❌ multiprocessing اضافه نکن
+❌ GPU optimization اضافه نکن
+❌ Redis اضافه نکن
+
+اول baseline.
+
+---
+
+## معیار پایان Step 7.1
+
+باید این سه چیز را داشته باشیم:
+
+```text
+app/inference/engine.py
+        │
+        └── inference timing
+
+scripts/benchmark.py
+        │
+        └── baseline latency
+
+Makefile
+        │
+        └── make benchmark
+```
+
+و:
+
+```bash
+make check
+```
+
+باید همچنان:
+
+```text
+15 passed
+```
+
+یا بیشتر داشته باشیم.
+
+بعد:
+
+```bash
+make benchmark
+```
+
+را اجرا کن و **خروجی benchmark را بفرست**.
+
+از روی عدد واقعی سیستم تو، در **Step 7.2** تصمیم می‌گیریم batching را با چه `batch_size` و `max_wait_ms` طراحی کنیم؛ یعنی مثلاً کورکورانه `batch_size=8` نمی‌گذاریم.
+
+(.venv) BBAP-Sec > make benchmark    
+python scripts/benchmark.py
+request=01 latency=2239.91 ms
+request=02 latency=31.88 ms
+...
+request=20 latency=36.25 ms
+
+--- Baseline ---
+requests: 20
+mean: 143.36 ms
+p50: 31.97 ms
+min: 27.93 ms
+max: 2239.91 ms
+
+----
+عالی. این baseline **اتفاقاً اطلاعات مهمی به ما می‌دهد** و فعلاً نباید batching را اضافه کنیم.
+
+### تحلیل baseline تو
+
+| Metric   |          مقدار |
+| -------- | -------------: |
+| Requests |             20 |
+| Min      |   **27.93 ms** |
+| P50      |   **31.97 ms** |
+| Mean     |  **143.36 ms** |
+| Max      | **2239.91 ms** |
+
+مهم‌ترین نکته:
+
+```text
+Request #1   2239.91 ms  ← cold start
+Request #2      31.88 ms
+Request #3      27.93 ms
+...
+Request #20     36.25 ms
+```
+
+یعنی inference واقعی بعد از warm-up تقریباً **28–42 ms** است؛ میانگین `143 ms` به‌خاطر همان request اول شدیداً skew شده.
+
+پس فعلاً این را به عنوان performance baseline ثبت می‌کنیم:
+
+```text
+Cold-start latency: ~2.24 s
+Warm latency:       ~28–42 ms
+P50 latency:        ~32 ms
+```
+
+این خیلی خوب است، چون نشان می‌دهد احتمالاً آن `2.2s` مربوط به **اولین model execution / framework initialization / memory setup** است، نه latency معمول YOLO11.
+
+---
+
+# Step 7.2 — Benchmark را حرفه‌ای‌تر کنیم
+
+Benchmark فعلی یک مشکل دارد:
+
+```python
+statistics.mean(latencies)
+```
+
+cold start را با warm requests قاطی می‌کند.
+
+برای یک ML serving benchmark حرفه‌ای، باید warm-up را جدا کنیم.
+
+## `scripts/benchmark.py`
+
+قسمت configuration را تغییر بده:
+
+```python
+REQUESTS = 20
+WARMUP_REQUESTS = 3
+```
+
+و ساختار `main()` را این‌طور کن:
+
+```python
+def send_request(image_data: bytes) -> float:
+    started = time.perf_counter()
+
+    response = requests.post(
+        API_URL,
+        params={"model": "yolo11"},
+        files={
+            "file": (
+                "streetAndpeople.jpg",
+                image_data,
+                "image/jpeg",
+            )
+        },
+        timeout=30,
+    )
+
+    elapsed_ms = (
+        time.perf_counter() - started
+    ) * 1000
+
+    response.raise_for_status()
+
+    return elapsed_ms
+```
+
+بعد `main()`:
+
+```python
+def main() -> None:
+    latencies: list[float] = []
+
+    with open(IMAGE_PATH, "rb") as image_file:
+        image_data = image_file.read()
+
+    print(
+        f"Warm-up requests: {WARMUP_REQUESTS}"
+    )
+
+    for index in range(WARMUP_REQUESTS):
+        latency = send_request(image_data)
+
+        print(
+            f"warmup={index + 1:02d} "
+            f"latency={latency:.2f} ms"
+        )
+
+    print(
+        f"\nBenchmark requests: {REQUESTS}"
+    )
+
+    for index in range(REQUESTS):
+        latency = send_request(image_data)
+
+        latencies.append(latency)
+
+        print(
+            f"request={index + 1:02d} "
+            f"latency={latency:.2f} ms"
+        )
+
+    print("\n--- Benchmark ---")
+
+    print(f"requests: {len(latencies)}")
+
+    print(
+        f"mean: "
+        f"{statistics.mean(latencies):.2f} ms"
+    )
+
+    print(
+        f"p50: "
+        f"{statistics.median(latencies):.2f} ms"
+    )
+
+    print(
+        f"min: "
+        f"{min(latencies):.2f} ms"
+    )
+
+    print(
+        f"max: "
+        f"{max(latencies):.2f} ms"
+    )
+```
+
+---
+
+# یک metric مهم دیگر: P95
+
+برای production، `P95` خیلی مهم‌تر از `mean` است.
+
+مثلاً:
+
+```text
+P50 = typical request
+P95 = slow requests
+P99 = tail latency
+```
+
+اضافه کن:
+
+```python
+def percentile(
+    values: list[float],
+    percentile_value: float,
+) -> float:
+    values = sorted(values)
+
+    index = int(
+        len(values) * percentile_value / 100
+    )
+
+    index = min(
+        index,
+        len(values) - 1,
+    )
+
+    return values[index]
+```
+
+و:
+
+```python
+print(
+    f"p95: "
+    f"{percentile(latencies, 95):.2f} ms"
+)
+```
+
+---
+
+# یک metric دیگر: Throughput
+
+بعداً برای concurrent batching خیلی مهم می‌شود.
+
+فعلاً sequential throughput:
+
+```python
+duration_seconds = sum(latencies) / 1000
+
+throughput = (
+    len(latencies) / duration_seconds
+)
+```
+
+و:
+
+```python
+print(
+    f"throughput: "
+    f"{throughput:.2f} req/s"
+)
+```
+
+---
+
+# خروجی مورد انتظار
+
+بعد از warm-up احتمالاً چیزی نزدیک این خواهی داشت:
+
+```text
+--- Benchmark ---
+
+requests: 20
+mean: 33.xx ms
+p50: 32.xx ms
+p95: 4x.xx ms
+min: 2x.xx ms
+max: 4x.xx ms
+throughput: 30.xx req/s
+```
+
+عدد واقعی مهم است، نه مثال بالا.
+
+---
+
+# اما یک نکته مهم درباره batching
+
+با baseline فعلی، **نباید انتظار داشته باشیم batching لزوماً latency یک request را کمتر کند.**
+
+Batching برای این است:
+
+```text
+                 Single inference
+Request 1 ───────────────► YOLO
+Request 2 ───────────────► YOLO
+Request 3 ───────────────► YOLO
+Request 4 ───────────────► YOLO
+```
+
+در مقابل:
+
+```text
+                 Dynamic batch
+Request 1 ─┐
+Request 2 ─┤
+Request 3 ─┼──► [1,2,3,4] ──► YOLO
+Request 4 ─┘
+```
+
+هدف اصلی:
+
+**افزایش throughput تحت concurrent load**
+
+است، نه الزاماً کاهش single-request latency.
+
+حتی ممکن است:
+
+```text
+single request:
+~32 ms
+
+batched request:
+~35-50 ms
+```
+
+اما throughput مثلاً از:
+
+```text
+~30 req/s
+```
+
+به:
+
+```text
+~70-100 req/s
+```
+
+برسد.
+
+این همان trade-off مهم real-time serving است.
+
+---
+
+# Step 7.3 بعدی
+
+بعد از اینکه benchmark جدید را اجرا کردی، می‌رویم سراغ:
+
+```text
+DynamicBatcher
+```
+
+با دو پارامتر قابل تنظیم:
+
+```yaml
+batching:
+  enabled: true
+  max_batch_size: 4
+  max_wait_ms: 10
+```
+
+و معماری:
+
+```text
+HTTP requests
+      │
+      ▼
+   Queue
+      │
+      ├── max_batch_size = 4
+      │
+      └── max_wait_ms = 10ms
+                │
+                ▼
+          DynamicBatcher
+                │
+                ▼
+          InferenceEngine
+                │
+                ▼
+              YOLO
+```
+
+**ولی فعلاً همین benchmark warm-up را پیاده کن و `make benchmark` را دوباره بفرست.** از آن عدد برای انتخاب `max_batch_size` و `max_wait_ms` استفاده می‌کنیم، نه از یک مقدار تصادفی.
+----
+
+عالی. این baseline الان **واقعاً قابل استفاده برای طراحی batching** است.
+
+نتیجه فعلی:
+
+| Metric                |        Baseline |
+| --------------------- | --------------: |
+| Warm-up #1            |      2725.72 ms |
+| Warm-up #2–3          |          ~35 ms |
+| Mean                  |    **44.94 ms** |
+| P50                   |    **38.91 ms** |
+| P95                   |    **87.18 ms** |
+| Min                   |    **30.98 ms** |
+| Max                   |    **87.18 ms** |
+| Sequential throughput | **22.25 req/s** |
+
+نکته مهم: warm-up اول را از benchmark جدا کرده‌ای، پس `44.94 ms` دیگر تحت تأثیر cold start نیست. این baseline را نگه می‌داریم.
+
+## Step 7.3 — Dynamic Batcher
+
+حالا batching واقعی را اضافه می‌کنیم.
+
+اما طراحی را ساده و قابل توسعه نگه می‌داریم:
+
+```text
+                    HTTP Requests
+                         │
+                         ▼
+                  InferenceEngine
+                         │
+                         ▼
+                  DynamicBatcher
+                    │        │
+                    │        └── max_wait_ms
+                    │
+                    └────────── max_batch_size
+                              │
+                              ▼
+                         Model inference
+                              │
+                              ▼
+                       Individual results
+```
+
+### هدف اولیه
+
+برای اولین implementation:
+
+```yaml
+max_batch_size: 4
+max_wait_ms: 10
+```
+
+چرا؟
+
+چون baseline تو حدود `39 ms P50` است. یک wait window ده‌میلی‌ثانیه‌ای هنوز نسبتاً کوچک است و برای workload real-time منطقی‌تر از مثلاً 50ms است.
+
+**ولی این اعداد را فعلاً بهینه فرض نمی‌کنیم.** بعداً با benchmark مقایسه می‌کنیم.
+
+---
+
+# 7.3.1 — Config
+
+در:
+
+```text
+configs/development.yaml
+```
+
+اضافه کن:
+
+```yaml
+batching:
+  enabled: true
+  max_batch_size: 4
+  max_wait_ms: 10
+```
+
+و در production:
+
+```yaml
+batching:
+  enabled: true
+  max_batch_size: 8
+  max_wait_ms: 5
+```
+
+فعلاً production فقط configuration است؛ هنوز benchmark نکرده‌ایم که `8/5` بهتر باشد.
+
+---
+
+# 7.3.2 — Settings
+
+در `app/core/config.py` یک config model برای batching اضافه کن.
+
+اگر از Pydantic Settings فعلی استفاده می‌کنی:
+
+```python
+class BatchingConfig(BaseModel):
+    enabled: bool = True
+    max_batch_size: int = 4
+    max_wait_ms: int = 10
+```
+
+و داخل settings:
+
+```python
+batching: BatchingConfig = BatchingConfig()
+```
+
+فراموش نکن:
+
+```python
+from pydantic import BaseModel
+```
+
+اگر `BaseModel` دیگری در فایل داری، اسم import را با ساختار فعلی پروژه هماهنگ کن.
+
+---
+
+# 7.3.3 — Batcher
+
+فایل:
+
+```text
+app/inference/batching.py
+```
+
+فعلاً یک implementation کوچک و تمیز می‌سازیم.
+
+```python
+import asyncio
+from dataclasses import dataclass
+from time import perf_counter
+from typing import Any
+
+
+@dataclass
+class InferenceRequest:
+    """Single inference request waiting for execution."""
+
+    input_data: Any
+    future: asyncio.Future
+
+
+class DynamicBatcher:
+    """Collect inference requests into bounded batches."""
+
+    def __init__(
+        self,
+        max_batch_size: int = 4,
+        max_wait_ms: int = 10,
+    ) -> None:
+        self.max_batch_size = max_batch_size
+        self.max_wait_ms = max_wait_ms
+
+        self._queue: asyncio.Queue[
+            InferenceRequest
+        ] = asyncio.Queue()
+
+        self._worker_task: asyncio.Task | None = None
+        self._running = False
+
+    async def start(self) -> None:
+        """Start the background batch worker."""
+
+        if self._running:
+            return
+
+        self._running = True
+
+        self._worker_task = asyncio.create_task(
+            self._worker()
+        )
+
+    async def stop(self) -> None:
+        """Stop the background batch worker."""
+
+        self._running = False
+
+        if self._worker_task:
+            await self._worker_task
+
+            self._worker_task = None
+
+    async def submit(
+        self,
+        input_data: Any,
+    ) -> Any:
+        """Submit one inference request."""
+
+        loop = asyncio.get_running_loop()
+
+        future = loop.create_future()
+
+        request = InferenceRequest(
+            input_data=input_data,
+            future=future,
+        )
+
+        await self._queue.put(request)
+
+        return await future
+
+    async def _worker(self) -> None:
+        """Collect and process batches."""
+
+        while self._running:
+            request = await self._queue.get()
+
+            batch = [request]
+
+            deadline = (
+                perf_counter()
+                + self.max_wait_ms / 1000
+            )
+
+            while len(batch) < self.max_batch_size:
+                remaining = (
+                    deadline - perf_counter()
+                )
+
+                if remaining <= 0:
+                    break
+
+                try:
+                    next_request = await asyncio.wait_for(
+                        self._queue.get(),
+                        timeout=remaining,
+                    )
+
+                    batch.append(next_request)
+
+                except asyncio.TimeoutError:
+                    break
+
+            await self._process_batch(batch)
+
+    async def _process_batch(
+        self,
+        batch: list[InferenceRequest],
+    ) -> None:
+        """Process one collected batch."""
+
+        # Temporary implementation.
+        # Model batch inference will be added next.
+        for request in batch:
+            if not request.future.done():
+                request.future.set_result(
+                    request.input_data
+                )
+```
+
+### اما یک نکته مهم
+
+این **هنوز به YOLO وصل نیست**.
+
+عمداً.
+
+فعلاً infrastructure batching را جدا می‌کنیم تا بتوانیم آن را مستقل test کنیم.
+
+---
+
+# 7.3.4 — چرا `Future`؟
+
+این قسمت:
+
+```python
+future = loop.create_future()
+```
+
+خیلی مهم است.
+
+مثلاً:
+
+```text
+Request A
+   │
+   ▼
+ Future A ───────────────┐
+                         │
+Request B                │
+   │                     │
+   ▼                     │
+ Future B ───────────┐   │
+                     │   │
+                     ▼   ▼
+                  Batch [A,B]
+                     │
+                     ▼
+                  YOLO
+                     │
+                ┌────┴────┐
+                ▼         ▼
+             Future A   Future B
+                │         │
+                ▼         ▼
+             Response   Response
+```
+
+هر HTTP request نتیجه خودش را دریافت می‌کند، حتی اگر inference به‌صورت batch اجرا شده باشد.
+
+این یکی از بخش‌های مهم طراحی serving system است.
+
+---
+
+# 7.3.5 — Test مستقل Batcher
+
+بساز:
+
+```text
+tests/unit/test_batching.py
+```
+
+```python
+import asyncio
+
+import pytest
+
+from app.inference.batching import DynamicBatcher
+
+
+@pytest.mark.asyncio
+async def test_single_request():
+    batcher = DynamicBatcher(
+        max_batch_size=4,
+        max_wait_ms=10,
+    )
+
+    await batcher.start()
+
+    result = await batcher.submit("image-1")
+
+    assert result == "image-1"
+
+    await batcher.stop()
+```
+
+و test برای چند request:
+
+```python
+@pytest.mark.asyncio
+async def test_multiple_requests():
+    batcher = DynamicBatcher(
+        max_batch_size=4,
+        max_wait_ms=10,
+    )
+
+    await batcher.start()
+
+    results = await asyncio.gather(
+        batcher.submit("image-1"),
+        batcher.submit("image-2"),
+        batcher.submit("image-3"),
+        batcher.submit("image-4"),
+    )
+
+    assert results == [
+        "image-1",
+        "image-2",
+        "image-3",
+        "image-4",
+    ]
+
+    await batcher.stop()
+```
+
+---
+
+# یک مشکل کوچک در `stop()`
+
+برای implementation فعلی، worker ممکن است در:
+
+```python
+await self._queue.get()
+```
+
+گیر کند و `stop()` نتواند به‌موقع آن را متوقف کند.
+
+پس قبل از integration با FastAPI، این را حرفه‌ای‌تر می‌کنیم.
+
+در `DynamicBatcher` یک sentinel اضافه کن:
+
+```python
+_STOP = object()
+```
+
+ولی چون queue type ما `InferenceRequest` است، بهتر است این بخش را در مرحله بعد با shutdown mechanism تمیز کنیم.
+
+**فعلاً اگر testها پاس شدند، دست نزن.**
+
+---
+
+# خیلی مهم: فعلاً Engine را تغییر نده
+
+در این مرحله:
+
+```text
+HTTP
+ ↓
+InferenceEngine
+ ↓
+BaseModel
+ ↓
+YOLO
+```
+
+هنوز همان baseline را حفظ می‌کنیم.
+
+Batcher فعلاً isolated است:
+
+```text
+DynamicBatcher
+    ↑
+unit tests
+```
+
+بعد در **Step 7.4** آن را به engine وصل می‌کنیم.
+
+این کار عمداً انجام می‌شود تا اگر batching bug داشت، inference فعلی خراب نشود.
+
+---
+
+## حالا اجرا کن
+
+```bash
+make check
+```
+
+باید:
+
+```text
+ruff check .
+All checks passed!
+
+pytest
+...
+```
+
+و تعداد تست‌ها باید از 15 بیشتر شود.
+
+اگر سبز شد، خروجی `make check` را بفرست.
+
+بعد می‌رویم **Step 7.4 — اتصال واقعی DynamicBatcher به `InferenceEngine` و YOLO11**؛ آنجا بخش جذاب شروع می‌شود: batch واقعی `[N, C, H, W]` و سپس benchmark concurrent برای مقایسه throughput با baseline فعلی `22.25 req/s`.
+---
+عالی. حالا می‌رویم سراغ **Step 7.4 — اتصال واقعی Dynamic Batcher به YOLO11**.
+
+اما یک نکته مهم: چون `DynamicBatcher` فعلی با `Any` کار می‌کند، اگر مستقیم آن را به YOLO وصل کنیم احتمالاً دوباره مجبور به refactor می‌شویم. این بار interface را درست می‌سازیم:
+
+```text
+HTTP request
+     │
+     ▼
+InferenceEngine
+     │
+     ▼
+DynamicBatcher
+     │
+     ├── request 1 ─┐
+     ├── request 2 ─┤
+     ├── request 3 ─┼──► batch
+     └── request 4 ─┘
+                       │
+                       ▼
+                  YOLO11 batch
+                       │
+                 ┌─────┴─────┐
+                 ▼           ▼
+              result 1    result 2 ...
+```
+
+## 7.4.1 — اول interface مدل را batch-aware کنیم
+
+در `app/models/base.py`، **متد فعلی `inference()` را حذف نکن**. یک متد جدید اضافه کن:
+
+```python
+from typing import Any
+
+
+class BaseModel(ABC):
+    ...
+
+    def inference_batch(
+        self,
+        inputs: list[Any],
+    ) -> list[Any]:
+        """Run inference on a batch of inputs."""
+
+        return [
+            self.inference(item)
+            for item in inputs
+        ]
+```
+
+این نکته مهم است:
+
+### مدل‌هایی که batch واقعی را پشتیبانی نمی‌کنند
+
+خودکار fallback می‌گیرند:
+
+```text
+inference_batch([A, B, C])
+        │
+        ├── inference(A)
+        ├── inference(B)
+        └── inference(C)
+```
+
+اما YOLO11 را بعداً override می‌کنیم تا واقعاً batch را یکجا اجرا کند.
+
+این باعث می‌شود abstraction ما framework-specific نشود.
+
+---
+
+# 7.4.2 — YOLO11 را batch-aware کنیم
+
+در:
+
+```text
+app/models/ultralytics.py
+```
+
+در کلاس `UltralyticsModel` یک متد:
+
+```python
+def inference_batch(
+    self,
+    inputs: list[Any],
+) -> list[Any]:
+```
+
+اضافه کن.
+
+اما اینجا یک مسئله مهم داریم:
+
+**`inputs` باید بعد از preprocessing چه شکلی باشند؟**
+
+اگر الان `preprocess()` یک `numpy.ndarray` برمی‌گرداند، می‌توانیم:
+
+```python
+images = [
+    self.preprocess(item)
+    for item in inputs
+]
+```
+
+بعد YOLO را با list تصاویر صدا بزنیم.
+
+ساختار:
+
+```python
+def inference_batch(
+    self,
+    inputs: list[Any],
+) -> list[Any]:
+    images = [
+        self.preprocess(item)
+        for item in inputs
+    ]
+
+    outputs = self.model(
+        images,
+        verbose=False,
+    )
+
+    return [
+        self.postprocess(output)
+        for output in outputs
+    ]
+```
+
+**ولی این قسمت را فعلاً کورکورانه paste نکن.**
+
+چون implementation فعلی `UltralyticsModel` تو مشخص می‌کند `preprocess()` و `postprocess()` دقیقاً چه typeهایی دارند.
+
+اگر `preprocess()` الان `numpy.ndarray` می‌دهد، همین pattern مناسب است؛ اگر مستقیماً `Results` یا چیز دیگری می‌دهد، باید با implementation خودت هماهنگش کنیم.
+
+---
+
+# 7.4.3 — Batcher باید executor داشته باشد
+
+الان batcher این کار را می‌کند:
+
+```python
+await self._process_batch(batch)
+```
+
+ولی خودش نباید بداند YOLO چیست.
+
+بهتر است یک callback به آن بدهیم:
+
+```python
+Batcher
+   │
+   └── batch_handler
+             │
+             ▼
+       InferenceEngine
+             │
+             ▼
+           Model
+```
+
+پس constructor:
+
+```python
+def __init__(
+    self,
+    batch_handler: Callable[
+        [list[Any]],
+        Awaitable[list[Any]],
+    ],
+    max_batch_size: int = 4,
+    max_wait_ms: int = 10,
+) -> None:
+```
+
+و import:
+
+```python
+from collections.abc import Awaitable, Callable
+```
+
+بعد:
+
+```python
+self._batch_handler = batch_handler
+```
+
+و `_process_batch()`:
+
+```python
+async def _process_batch(
+    self,
+    batch: list[InferenceRequest],
+) -> None:
+    inputs = [
+        request.input_data
+        for request in batch
+    ]
+
+    results = await self._batch_handler(inputs)
+
+    if len(results) != len(batch):
+        error = RuntimeError(
+            "Batch handler returned an invalid "
+            "number of results."
+        )
+
+        for request in batch:
+            if not request.future.done():
+                request.future.set_exception(error)
+
+        return
+
+    for request, result in zip(
+        batch,
+        results,
+        strict=True,
+    ):
+        if not request.future.done():
+            request.future.set_result(result)
+```
+
+این قسمت خیلی مهم است:
+
+```python
+zip(..., strict=True)
+```
+
+چون اگر YOLO مثلاً برای 4 input فقط 3 result بدهد، silently خراب نمی‌شویم.
+
+---
+
+# 7.4.4 — Engine مسئول اجرای batch
+
+در `InferenceEngine` یک متد:
+
+```python
+async def predict_batch(
+    self,
+    model_name: str,
+    inputs: list[Any],
+) -> list[Any]:
+    model = self.registry.get(model_name)
+
+    return model.inference_batch(inputs)
+```
+
+اما اینجا یک نکته architecture داریم:
+
+**batching باید per-model باشد.**
+
+یعنی:
+
+```text
+yolo11 requests ──► YOLO batch
+resnet requests ──► ResNet batch
+```
+
+نباید این اتفاق بیفتد:
+
+```text
+YOLO + ResNet + YOLO
+          │
+          ▼
+       one batch ❌
+```
+
+پس batch queue در نهایت باید key داشته باشد:
+
+```text
+(model_name, input)
+```
+
+ولی برای اولین implementation فقط `yolo11` را batch می‌کنیم.
+
+---
+
+# 7.4.5 — اولین تست واقعی
+
+قبل از اتصال HTTP، یک unit test می‌نویسیم.
+
+`tests/unit/test_batching.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_batch_handler_receives_multiple_inputs():
+    received_batches: list[list[str]] = []
+
+    async def handler(
+        inputs: list[str],
+    ) -> list[str]:
+        received_batches.append(inputs)
+
+        return [
+            f"{item}-result"
+            for item in inputs
+        ]
+
+    batcher = DynamicBatcher(
+        batch_handler=handler,
+        max_batch_size=4,
+        max_wait_ms=20,
+    )
+
+    await batcher.start()
+
+    try:
+        results = await asyncio.gather(
+            batcher.submit("image-1"),
+            batcher.submit("image-2"),
+            batcher.submit("image-3"),
+            batcher.submit("image-4"),
+        )
+
+        assert results == [
+            "image-1-result",
+            "image-2-result",
+            "image-3-result",
+            "image-4-result",
+        ]
+
+        assert received_batches == [
+            [
+                "image-1",
+                "image-2",
+                "image-3",
+                "image-4",
+            ]
+        ]
+    finally:
+        await batcher.stop()
+```
+
+این تست به ما ثابت می‌کند:
+
+```text
+4 requests
+    ↓
+ONE handler call
+    ↓
+4 inputs
+    ↓
+4 individual responses
+```
+
+---
+
+## اما یک اصلاح مهم در طراحی فعلی
+
+من پیشنهاد می‌کنم **فعلاً `DynamicBatcher` را مستقیماً داخل route نگذاریم.**
+
+یعنی این architecture را نمی‌خواهیم:
+
+```text
+Route
+  ↓
+Batcher
+  ↓
+YOLO
+```
+
+بلکه:
+
+```text
+Route
+  ↓
+InferenceEngine
+  ↓
+Batcher
+  ↓
+Model
+```
+
+چون در آینده:
+
+```text
+REST
+WebSocket
+RTSP
+Camera
+   │
+   ▼
+InferenceEngine
+   │
+   ▼
+Batcher
+```
+
+همه از یک serving layer استفاده خواهند کرد.
+
+این برای پروژه‌ای که می‌خواهی در Upwork ارائه کنی، architecture بسیار قابل دفاع‌تری است.
+
+---
+
+## فعلاً فقط این بخش را انجام بده
+
+ترتیب کار:
+
+1. `BaseModel.inference_batch()`
+2. `DynamicBatcher` را به `batch_handler` مجهز کن
+3. `test_batch_handler_receives_multiple_inputs`
+4. `make check`
+
+**فعلاً `UltralyticsModel` و HTTP route را تغییر نده.**
+
+اگر تست جدید سبز شد، مرحله بعدی را می‌رویم روی **YOLO11 واقعی** و آنجا batch را به `Ultralytics` وصل می‌کنیم؛ بعد benchmark concurrent می‌سازیم تا ببینیم آیا از baseline فعلی **22.25 req/s** بهتر شده یا نه.
+---

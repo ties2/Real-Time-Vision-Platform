@@ -67,3 +67,16 @@ class UltralyticsModel(BaseModel):
         """Return whether the model is loaded."""
 
         return self._model is not None
+
+    def inference_batch(
+        self,
+        inputs: list[Any],
+    ) -> list[Any]:
+        images = [self.preprocess(item) for item in inputs]
+
+        outputs = self.model(
+            images,
+            verbose=False,
+        )
+
+        return [self.postprocess(output) for output in outputs]

@@ -31,6 +31,9 @@ clean:
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
 	find . -type d -name ".mypy_cache" -exec rm -rf {} +
 
+benchmark:
+	python scripts/benchmark.py
+
 #1.ruff check . --fix
 #2.ruff format .
 #3.make check
