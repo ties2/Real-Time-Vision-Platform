@@ -1,7 +1,5 @@
 from pathlib import Path
-from typing import Any
 
-import numpy as np
 import pytest
 
 from app.models.registry import ModelConfig
@@ -41,23 +39,3 @@ def test_missing_model_artifact():
 
     with pytest.raises(FileNotFoundError):
         model.load()
-
-
-def predict_batch(
-    self,
-    inputs: list[np.ndarray],
-) -> list[Any]:
-    """Run YOLO inference on a batch of images."""
-
-    if not inputs:
-        return []
-
-    if not self.is_loaded():
-        self.load()
-
-    results = self._model.predict(
-        source=inputs,
-        verbose=False,
-    )
-
-    return list(results)
