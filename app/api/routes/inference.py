@@ -20,12 +20,12 @@ router = APIRouter(
     response_model=InferenceResponse,
 )
 async def inference(
-    engine: Annotated[
-        InferenceEngine,
-        Depends(get_inference_engine),
-    ],
-    file: Annotated[UploadFile, File(...)],
-    model: str = "yolo11",
+        engine: Annotated[
+            InferenceEngine,
+            Depends(get_inference_engine),
+        ],
+        file: Annotated[UploadFile, File(...)],
+        model: str = "yolo11",
 ) -> InferenceResponse:
     """Run object detection on an uploaded image."""
 
@@ -52,13 +52,17 @@ async def inference(
 
     metadata = selected_model.metadata()
 
-    detections = postprocess_results(result.results)
+    # result.output is ONE Ultralytics Results object (for this image only).
+    detections = postprocess_results([result.output])
+
+    image_height, image_width = image.shape[:2]
 
     return InferenceResponse(
         model=model,
         model_version=str(metadata["version"]),
-        inference_time_ms=result.inference_time_ms,
-        image_width=result.image_width,
-        image_height=result.image_height,
+        inference_time_ms=round(result.inference_time_ms, 2),
+        batch_size=result.batch_size,
+        image_width=image_width,
+        image_height=image_height,
         detections=detections,
     )
