@@ -11,10 +11,10 @@ class UltralyticsModel(BaseModel):
     """Ultralytics-backed object detection model."""
 
     def __init__(
-        self,
-        name: str,
-        config: ModelConfig,
-        models_dir: Path,
+            self,
+            name: str,
+            config: ModelConfig,
+            models_dir: Path,
     ) -> None:
         self.name = name
         self.config = config
@@ -33,8 +33,8 @@ class UltralyticsModel(BaseModel):
         self._model = YOLO(str(self.artifact_path))
 
     def predict(
-        self,
-        input_data: Any,
+            self,
+            input_data: Any,
     ) -> Any:
         """Run inference using the loaded model."""
 
@@ -68,15 +68,29 @@ class UltralyticsModel(BaseModel):
 
         return self._model is not None
 
-    def inference_batch(
-        self,
-        inputs: list[Any],
+    def predict_batch(
+            self,
+            inputs: list[Any],
     ) -> list[Any]:
-        images = [self.preprocess(item) for item in inputs]
+        """Run YOLO inference on a batch of images in ONE forward pass.
 
-        outputs = self.model(
-            images,
+        Returns one Ultralytics ``Results`` object per input image,
+        in the same order as ``inputs``.
+        """
+
+        if not inputs:
+            return []
+
+        if self._model is None:
+            raise RuntimeError(f"Model '{self.name}' has not been loaded.")
+
+        target_device = None if self.config.device == "auto" else self.config.device
+
+        results = self._model.predict(
+            source=inputs,
+            device=target_device,
+            conf=self.config.confidence_threshold,
             verbose=False,
         )
 
-        return [self.postprocess(output) for output in outputs]
+        return list(results)
