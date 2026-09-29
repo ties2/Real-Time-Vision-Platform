@@ -8,6 +8,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class BatchingConfig(BaseModel):
+    """Dynamic batching settings.
+
+    Override from the environment with a double underscore, e.g.:
+        BATCHING__ENABLED=false
+        BATCHING__MAX_BATCH_SIZE=8
+        BATCHING__MAX_WAIT_MS=5
+    """
+
     enabled: bool = True
     max_batch_size: int = 4
     max_wait_ms: int = 10
@@ -40,6 +48,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        env_nested_delimiter="__",
         case_sensitive=False,
         extra="ignore",
     )
