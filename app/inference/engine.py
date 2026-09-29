@@ -1,4 +1,6 @@
 import asyncio
+from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 import numpy as np
@@ -7,14 +9,23 @@ from app.inference.batching import DynamicBatcher
 from app.models.registry import ModelRegistry
 
 
+@dataclass(frozen=True)
+class InferenceOutput:
+    """Result of one request after it went through a batch."""
+
+    output: Any
+    inference_time_ms: float
+    batch_size: int
+
+
 class InferenceEngine:
     """Orchestrates model inference and dynamic batching."""
 
     def __init__(
-        self,
-        registry: ModelRegistry,
-        max_batch_size: int = 4,
-        max_wait_ms: int = 10,
+            self,
+            registry: ModelRegistry,
+            max_batch_size: int = 4,
+            max_wait_ms: int = 10,
     ) -> None:
         self.registry = registry
 
@@ -35,50 +46,52 @@ class InferenceEngine:
         await self.batcher.stop()
 
     def predict(
-        self,
-        model_name: str,
-        image: np.ndarray,
+            self,
+            model_name: str,
+            image: np.ndarray,
     ) -> Any:
-        """Run single-image inference."""
+        """Run single-image inference (bypasses the batcher)."""
 
         model = self.registry.get(model_name)
 
         return model.predict(image)
 
-    async def predict_batch(
-        self,
-        model_name: str,
-        inputs: list[Any],
-    ) -> list[Any]:
-        """Submit inputs to the model-specific batcher."""
-
-        results = await asyncio.gather(
-            *[
-                self.batcher.submit(
-                    model_name,
-                    input_data,
-                )
-                for input_data in inputs
-            ]
-        )
-
-        return results
-
     async def _predict_batch(
-        self,
-        model_name: str,
-        inputs: list[Any],
-    ) -> list[Any]:
-        """Execute a model-specific batch."""
+            self,
+            model_name: str,
+            inputs: list[Any],
+    ) -> list[InferenceOutput]:
+        """Execute one model-specific batch.
+
+        The model call is blocking (CPU/GPU work), so it runs in a worker
+        thread. Otherwise it would freeze the event loop and no new HTTP
+        requests could be accepted while the model is running.
+        """
 
         model = self.registry.get(model_name)
 
-        return model.predict_batch(inputs)
+        started = perf_counter()
+
+        outputs = await asyncio.to_thread(
+            model.predict_batch,
+            inputs,
+        )
+
+        elapsed_ms = (perf_counter() - started) * 1000
+
+        return [
+            InferenceOutput(
+                output=output,
+                inference_time_ms=elapsed_ms,
+                batch_size=len(inputs),
+            )
+            for output in outputs
+        ]
 
     async def submit(
-        self,
-        model_name: str,
-        image: Any,
+            self,
+            model_name: str,
+            image: Any,
     ) -> Any:
         """Submit one inference request to the dynamic batcher."""
 
